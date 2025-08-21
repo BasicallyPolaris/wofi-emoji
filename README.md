@@ -6,8 +6,6 @@ it just tries to copy it using [wl-clipboard](https://github.com/bugaevc/wl-clip
 
 The original maintained repo can be found here: [Zeioth/wofi-emoji](https://github.com/Zeioth/wofi-emoji)
 
-![Screenshot of wofi-emoji in action](./preview/wofi-emoji-localized.png)
-
 ## Usage
 ```bash
 Usage: wofi-emoji [OPTIONS]
@@ -26,6 +24,11 @@ Examples:
     wofi-emoji -l de,fr,es -f     # Use German, French, Spanish and force refresh db
 ```
 
+### Example: `wofi-emoji -l de,en`
+
+Searchable strings for emojis are output in this format "`Language 1 Description`" - "`Language 2 Description`" - ... (`Keywords for all the chosen languages`)
+
+![Screenshot of wofi-emoji in action](./preview/wofi-emoji-localized.png)
 
 ## Example Configuration for Sway and Hyprland
 
@@ -36,7 +39,7 @@ Add a shortcut key in your [sway](https://swaywm.org/) config:
 ```
 # ~/.config/sway/config
 
-bindsym Mod4+e exec wofi-emoji
+bindsym Mod4+e exec wofi-emoji # -l en,de,fr,..
 ```
 
 Or in your [Hyprland](https://wiki.hypr.land/) Config for Windows-Style emoji functionality:
@@ -44,5 +47,5 @@ Or in your [Hyprland](https://wiki.hypr.land/) Config for Windows-Style emoji fu
 ```
 # ~/.config/hypr/config/keybindings.conf
 
-bindd = $mainMod, PERIOD, Emoji Picker, exec, wofi-emoji
+bindd = $mainMod, PERIOD, Emoji Picker, exec, wofi-emoji # -l en,de,fr,...
 ```

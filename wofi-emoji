@@ -10,14 +10,15 @@ Usage: wofi-emoji [OPTIONS]
 OPTIONS:
     -l, --languages LANG1,LANG2    Specify languages to fetch (comma-separated)
                                    Available: en, de, es, fr, it, pt, ru, ja, ko, zh, etc.
+                                   For full list see: https://emojibase.dev/emojis
                                    Default: en
     -f, --force                    Force refresh of cached database
     -h, --help                     Show this help message
 
 Examples:
-    wofi-emoji                            # Use English only (default)
-    wofi-emoji -l en,de                   # Use English and German
-    wofi-emoji -l de,fr,es -f             # Use German, French, Spanish and force refresh even if same languages
+    wofi-emoji                     # Use English only (default)
+    wofi-emoji -l en,de            # Use English and German
+    wofi-emoji -l de,fr,es -f      # Use German, French, Spanish and force refresh db
 EOF
 }
 
@@ -54,32 +55,44 @@ else
     CACHE_DIR="$HOME/.cache/wofi-emoji"
 fi
 
-# Normalize languages for consistent caching (sort and remove spaces)
-NORMALIZED_LANGS=$(echo "$LANGUAGES" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort | tr '\n' ',' | sed 's/,$//')
+# Clean up languages (remove spaces) but preserve user order for primary language preference
+CLEANED_LANGS=$(echo "$LANGUAGES" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' ',' | sed 's/,$//')
+# Create normalized version for caching (sorted for consistency)
+NORMALIZED_LANGS=$(echo "$CLEANED_LANGS" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
 CACHED_DB="$CACHE_DIR/emoji-database-$NORMALIZED_LANGS"
 
-# Check if we need to refresh the cache - exit early if not needed
-if [[ "$FORCE_REFRESH" != true ]] && [[ -f "$CACHED_DB" ]]; then
-    # Database exists for these exact languages and no force refresh - skip to wofi
-    SELECTED="$(wofi -p "emoji" --show dmenu -i < "$CACHED_DB")"
+# Function to handle emoji selection and execution
+handle_emoji_selection() {
+    local database_file="$1"
+    
+    # Launch wofi emoji selector
+    local selected
+    selected="$(wofi -I --matching multi-contains --insensitive -p "Enter keywords ..." --show dmenu -i < "$database_file")"
     
     # Extract just the emoji if something was selected
-    if [[ -n "$SELECTED" ]]; then
-        EMOJI=$(echo "$SELECTED" | sed 's/ .*//')
+    if [[ -n "$selected" ]]; then
+        local emoji
+        emoji=$(echo "$selected" | sed 's/ .*//')
         
         # Check for required tools only when we need to use them
         if command -v wtype &> /dev/null; then
-            wtype "$EMOJI"
+            wtype "$emoji"
         else
             echo "Warning: wtype not found, cannot type emoji" >&2
         fi
         
         if command -v wl-copy &> /dev/null; then
-            wl-copy "$EMOJI"
+            wl-copy "$emoji"
         else
             echo "Warning: wl-copy not found, cannot copy emoji" >&2
         fi
     fi
+}
+
+# Check if we need to refresh the cache - exit early if not needed
+if [[ "$FORCE_REFRESH" != true ]] && [[ -f "$CACHED_DB" ]]; then
+    # Database exists for these exact languages and no force refresh
+    handle_emoji_selection "$CACHED_DB"
     exit 0
 fi
 
@@ -110,8 +123,8 @@ fetch_language_data() {
 
 echo "Building emoji database for languages: $NORMALIZED_LANGS..." >&2
 
-# Convert comma-separated languages to array
-IFS=',' read -ra LANG_ARRAY <<< "$NORMALIZED_LANGS"
+# Convert comma-separated languages to array (preserve user order)
+IFS=',' read -ra LANG_ARRAY <<< "$CLEANED_LANGS"
 
 # Create a JSON object with all language data
 LANG_DATA="{"
@@ -138,77 +151,70 @@ for lang in "${LANG_ARRAY[@]}"; do
 done
 LANG_DATA+="}"
 
-# Process and merge the data
-echo "$LANG_DATA" | jq -r '
-# Store the root data
+# Process and merge the data with deduplication, preserving user language order
+echo "$LANG_DATA" | jq -r --arg user_langs "$CLEANED_LANGS" '
+# Store the root data and user language order
 . as $all_data |
+($user_langs | split(",")) as $user_order |
 
-# Get all language keys
-keys as $langs |
+# Get all available language keys
+keys as $available_langs |
 
-# Get emoji data from the first available language to establish order
-(.[$langs[0]] // .[$langs | sort | .[0]]) as $base_lang |
-
-# Process each emoji
-$base_lang[] |
-select(.emoji != null and .label != null) |
-.emoji as $current_emoji |
-
-# Collect data for this emoji from all languages
-[
-    $langs[] as $lang |
-    ($all_data[$lang][] | select(.emoji == $current_emoji)) |
+# Create a lookup object to collect all data for each unique emoji
+reduce (
+    $available_langs[] as $lang |
+    $all_data[$lang][] |
+    select(.emoji != null and .label != null) |
     {
+        emoji: .emoji,
         lang: $lang,
         label: .label,
         tags: ((.tags // []) + (.keywords // []))
     }
-] as $emoji_data |
+) as $item ({}; 
+    .[$item.emoji] += [$item]
+) |
 
-# Skip if no data found
-if ($emoji_data | length) == 0 then empty else
+# Now process each unique emoji
+to_entries[] |
+.key as $emoji |
+.value as $emoji_data |
 
-# Build the searchable tags string
+# Build the searchable tags string (deduplicated)
 (
     $emoji_data |
-    map(.tags | join(" ")) |
+    map(.tags[]) |
+    unique |
     join(" ") |
     # Remove empty entries and extra spaces
     gsub("  +"; " ") | gsub("^ +| +$"; "")
 ) as $searchable_tags |
 
-# Format output: emoji "label1" - "label2" - "label3"  (tags)
-$current_emoji + " " +
+# Build labels string with deduplication, respecting user language order
 (
-    $emoji_data |
-    map("\"" + .label + "\"") |
+    # Sort emoji_data by user preference order and deduplicate while preserving order
+    reduce (
+        $emoji_data |
+        sort_by(
+            .lang as $lang |
+            ($user_order | index($lang) // 999)
+        ) |
+        map(.label)[]
+    ) as $label ([]; 
+        if (. | index($label)) == null then . + [$label] else . end
+    ) |
+    map("\"" + . + "\"") |
     join(" - ")
-) +
+) as $labels |
+
+# Format output: emoji "label1" - "label2" - "label3"  (tags)
+$emoji +
+(if $labels != "" then " " + $labels else "" end) +
 # Only add parentheses if there are searchable tags
 (if ($searchable_tags | length) > 0 then "  (" + $searchable_tags + ")" else "" end)
-
-end
-' > "$CACHED_DB"
+' | sort -u > "$CACHED_DB"
 
 echo "✓ Emoji database cached successfully" >&2
 
 # Launch wofi emoji selector
-SELECTED="$(wofi -p "emoji" --show dmenu -i < "$CACHED_DB")"
-
-# Extract just the emoji if something was selected
-if [[ -n "$SELECTED" ]]; then
-    EMOJI=$(echo "$SELECTED" | sed 's/ .*//')
-    
-    # Check for required tools only when we need to use them
-    if command -v wtype &> /dev/null; then
-        wtype "$EMOJI"
-    else
-        echo "Warning: wtype not found, cannot type emoji" >&2
-    fi
-    
-    if command -v wl-copy &> /dev/null; then
-        wl-copy "$EMOJI"
-    else
-        echo "Warning: wl-copy not found, cannot copy emoji" >&2
-    fi
-fi
+handle_emoji_selection "$CACHED_DB"
